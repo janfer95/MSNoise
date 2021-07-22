@@ -296,6 +296,7 @@ def main(loglevel="INFO"):
         jt = time.time()
 
         comps = []
+        #TODO check if comp is 3, 4 or else?
         for comp in params.all_components:
             if comp[0] in ["Z", "E", "N", "1", "2"]:
                 comps.append(comp[0])
