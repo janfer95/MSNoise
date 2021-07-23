@@ -24,6 +24,7 @@ from sqlalchemy.sql.expression import func
 import numpy as np
 import pandas as pd
 import scipy as sp
+import xarray as xr
 
 if sp.__version__ < "1.4.0":
     import scipy.fftpack as sf
@@ -1450,6 +1451,13 @@ def get_results(session, station1, station2, filterid, components, dates,
         taxis = get_t_axis(session)
         return pd.DataFrame(stack_data, index=pd.DatetimeIndex(dates),
                             columns=taxis).loc[:lastday]
+    elif format == "xarray":
+        taxis = get_t_axis(session)
+        times = pd.DatetimeIndex(dates)
+        dr = xr.DataArray(stack_data, coords=[times, taxis],
+                          dims=["times", "taxis"]).dropna("times", how="all")
+        dr.name = "CCF"
+        return dr.to_dataset()
 
     elif format == "stack":
         logging.debug("Stacking...")
@@ -2011,10 +2019,8 @@ def to_sds(stats,year, jday):
     file=file.replace('TYPE', "D")
     return file
 
-## PSD part (not sure it'll end up here but easier to handle for now)
-from functools import lru_cache
 
-
+# PSD part (not sure it'll end up here but easier to handle for now)
 def psd_read_results(net, sta, loc, chan, datelist, format='PPSD', use_cache=True):
     from obspy.signal import PPSD
     if loc == "--":
@@ -2056,6 +2062,7 @@ def psd_read_results(net, sta, loc, chan, datelist, format='PPSD', use_cache=Tru
         ppsd.save_npz(fn[:-4])
     return ppsd
 
+
 def psd_ppsd_to_dataframe(ppsd):
     from obspy import UTCDateTime
     ind_times = np.array(
@@ -2068,11 +2075,15 @@ def hdf_open_store_from_fn(fn, mode="a"):
     store = pd.HDFStore(fn, complevel=9, complib="blosc:blosclz", mode=mode)
     return store
 
-def hdf_open_store(seed_id, location=os.path.join("PSD", "HDF"), mode="a"):
-    pd.set_option('io.hdf.default_format', 'table')
+
+def hdf_open_store(filename, location=os.path.join("PSD", "HDF"), mode="a",
+                   format='table'):
+    if ".h5" in filename:
+        filename = filename.replace(".h5", "")
+    pd.set_option('io.hdf.default_format', format)
     if not os.path.isdir(location):
         os.makedirs(location)
-    fn = os.path.join(location, seed_id + ".h5")
+    fn = os.path.join(location, filename + ".h5")
     store = pd.HDFStore(fn, complevel=9, complib="blosc:blosclz", mode=mode)
     return store
 
@@ -2091,3 +2102,47 @@ def hdf_insert_or_update(store, key, new):
 def hdf_close_store(store):
     store.close()
     del store
+
+
+def xr_create_or_open(fn, taxis=[], name="CCF"):
+    if os.path.isfile(fn):
+        # load_dataset works (it loads content in mem and closes, open_dataset
+        # failed, the file handle was still open and it failed later.
+        ds = xr.load_dataset(fn)
+        return ds
+    if name == "CCF":
+        times = pd.date_range("2000-01-01", freq="H", periods=0)
+        data = np.random.random((len(times), len(taxis)))
+        dr = xr.DataArray(data, coords=[times, taxis], dims=["times", "taxis"])
+        dr.name = name
+    elif name == "MWCS":
+        times = pd.date_range("2000-01-01", freq="H", periods=0)
+        keys = ["M", "EM", "MCOH"]
+        data = np.random.random((len(times), len(taxis), len(keys)))
+        dr = xr.DataArray(data, coords=[times, taxis, keys],
+                          dims=["times", "taxis", "keys"])
+        dr.name = name
+    elif name == "DTT":
+        times = pd.date_range("2000-01-01", freq="H", periods=0)
+        keys = ["m", "em", "a", "ea", "m0", "em0"]
+        data = np.random.random((len(times), len(keys)))
+        dr = xr.DataArray(data, coords=[times, keys],
+                          dims=["times", "keys"])
+        dr.name = name
+    else:
+        print("Not implemented, name=%s invalid." % name)
+        sys.exit(1)
+    return dr.to_dataset()
+
+
+def xr_insert_or_update(dataset, new):
+    tt = new.merge(dataset, compat='override', combine_attrs="drop_conflicts")
+    return tt.combine_first(dataset)
+
+
+def xr_save_and_close(dataset, fn):
+    if not os.path.isdir(os.path.split(fn)[0]):
+        os.makedirs(os.path.split(fn)[0])
+    dataset.to_netcdf(fn, mode="w")
+    dataset.close()
+    del dataset
