@@ -38,4 +38,4 @@ jobs:
     - name: Test suite
       shell: bash -l {0}
       run: |
-        msnoise test
+        msnoise utils test
